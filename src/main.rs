@@ -1,7 +1,10 @@
 use amethyst::assets::{AssetStorage, Loader};
-use amethyst::core::ecs::{Builder, World, WorldExt};
+use amethyst::core::ecs::{
+  Builder, Component, DenseVecStorage, Join, Read, System, World, WorldExt,
+  WriteStorage,
+};
 use amethyst::core::math::Vector3;
-use amethyst::core::{Transform, TransformBundle};
+use amethyst::core::{Time, Transform, TransformBundle};
 use amethyst::input::{is_close_requested, is_key_down, StringBindings, VirtualKeyCode};
 use amethyst::renderer::types::DefaultBackend;
 use amethyst::renderer::{
@@ -16,8 +19,52 @@ use amethyst::{
 const VIRTUAL_WIDTH: f32 = 512.;
 const VIRTUAL_HEIGHT: f32 = 288.;
 const GROUND_HEIGHT: f32 = 12.;
+const BACKGROUND_SCROLL_SPEED: f32 = 30.;
+const GROUND_SCROLL_SPEED: f32 = 60.;
+const BACKGROUND_LOOPING_POINT: f32 = 413.;
+const BACKGROUND_LOOPING_OFFSET: f32 = 290.;
 
-struct Flappy;
+#[derive(Debug)]
+enum BackgroundType {
+  Background,
+  Ground,
+}
+
+#[derive(Debug, Component)]
+#[storage(DenseVecStorage)]
+struct Background {
+  b_type: BackgroundType,
+  scroll_pos: f32,
+}
+
+struct BackgroundSystem;
+
+impl<'a> System<'a> for BackgroundSystem {
+  type SystemData = (
+    WriteStorage<'a, Background>,
+    WriteStorage<'a, Transform>,
+    Read<'a, Time>,
+  );
+
+  fn run(&mut self, (mut backgrounds, mut transforms, time): Self::SystemData) {
+    for (background, transform) in (&mut backgrounds, &mut transforms).join() {
+      match background.b_type {
+        BackgroundType::Background => {
+          background.scroll_pos = (background.scroll_pos
+            + BACKGROUND_SCROLL_SPEED * time.delta_seconds())
+            % BACKGROUND_LOOPING_POINT;
+          transform.set_translation_x(BACKGROUND_LOOPING_OFFSET - background.scroll_pos);
+        }
+        BackgroundType::Ground => {
+          background.scroll_pos = (background.scroll_pos
+            + GROUND_SCROLL_SPEED * time.delta_seconds())
+            % BACKGROUND_LOOPING_POINT;
+          transform.set_translation_x(BACKGROUND_LOOPING_OFFSET - background.scroll_pos);
+        }
+      }
+    }
+  }
+}
 
 fn init_camera(world: &mut World) {
   world
@@ -28,8 +75,8 @@ fn init_camera(world: &mut World) {
 }
 
 fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
-where
-  T: Into<String>,
+  where
+    T: Into<String>,
 {
   let texture_handle = {
     let loader = world.read_resource::<Loader>();
@@ -51,6 +98,8 @@ where
   SpriteRender::new(sprite_handle, number)
 }
 
+struct Flappy;
+
 impl SimpleState for Flappy {
   fn on_start(&mut self, _data: StateData<'_, GameData<'_, '_>>) {
     let world = _data.world;
@@ -61,14 +110,16 @@ impl SimpleState for Flappy {
     init_camera(world);
     world
       .create_entity()
+      .with(Background { b_type: BackgroundType::Background, scroll_pos: 0. })
       .with(background_sprite)
-      .with(Transform::from(Vector3::new(0., 0., 0.)))
+      .with(Transform::from(Vector3::new(BACKGROUND_LOOPING_OFFSET, 0., 0.)))
       .build();
     world
       .create_entity()
+      .with(Background { b_type: BackgroundType::Ground, scroll_pos: 0. })
       .with(ground_sprite)
       .with(Transform::from(Vector3::new(
-        0.,
+        BACKGROUND_LOOPING_OFFSET,
         (VIRTUAL_HEIGHT - GROUND_HEIGHT) / -2.,
         1.,
       )))
@@ -101,6 +152,7 @@ fn main() -> amethyst::Result<()> {
   let assets_dir = app_root.join("assets");
 
   let game_data = GameDataBuilder::default()
+    .with(BackgroundSystem, "background_system", &[])
     .with_bundle(TransformBundle::new())?
     .with_bundle(
       RenderingBundle::<DefaultBackend>::new()
