@@ -1,7 +1,7 @@
 use amethyst::assets::{AssetStorage, Loader};
 use amethyst::core::ecs::{
-  Builder, Component, DenseVecStorage, Join, Read, System, World, WorldExt,
-  WriteStorage,
+  Builder, Component, DenseVecStorage, Join, Read, System, World,
+  WorldExt, WriteStorage,
 };
 use amethyst::core::math::Vector3;
 use amethyst::core::{Time, Transform, TransformBundle};
@@ -37,6 +37,12 @@ struct Background {
   scroll_pos: f32,
 }
 
+#[derive(Debug, Default, Component)]
+#[storage(DenseVecStorage)]
+struct Bird {
+  ticks: f32,
+}
+
 struct BackgroundSystem;
 
 impl<'a> System<'a> for BackgroundSystem {
@@ -66,6 +72,25 @@ impl<'a> System<'a> for BackgroundSystem {
   }
 }
 
+struct BirdSystem;
+
+impl<'a> System<'a> for BirdSystem {
+  type SystemData = (
+    WriteStorage<'a, Bird>,
+    WriteStorage<'a, Transform>,
+    Read<'a, Time>,
+  );
+
+  fn run(&mut self, (mut birds, mut transforms, time): Self::SystemData) {
+    for (bird, transform) in (&mut birds, &mut transforms).join() {
+      bird.ticks += time.delta_seconds();
+      transform.set_translation_y(
+        30. * f32::sin(bird.ticks * 0.5 * std::f32::consts::PI)
+      );
+    }
+  }
+}
+
 fn init_camera(world: &mut World) {
   world
     .create_entity()
@@ -75,8 +100,8 @@ fn init_camera(world: &mut World) {
 }
 
 fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
-  where
-    T: Into<String>,
+where
+  T: Into<String>,
 {
   let texture_handle = {
     let loader = world.read_resource::<Loader>();
@@ -106,23 +131,40 @@ impl SimpleState for Flappy {
     let background_sprite =
       load_sprite("texture/background.png", "texture/background.ron", 0, world);
     let ground_sprite = load_sprite("texture/ground.png", "texture/ground.ron", 0, world);
+    let bird_sprite = load_sprite("texture/bird.png", "texture/bird.ron", 0, world);
 
     init_camera(world);
     world
       .create_entity()
-      .with(Background { b_type: BackgroundType::Background, scroll_pos: 0. })
+      .with(Background {
+        b_type: BackgroundType::Background,
+        scroll_pos: 0.,
+      })
       .with(background_sprite)
-      .with(Transform::from(Vector3::new(BACKGROUND_LOOPING_OFFSET, 0., 0.)))
+      .with(Transform::from(Vector3::new(
+        BACKGROUND_LOOPING_OFFSET,
+        0.,
+        0.,
+      )))
       .build();
     world
       .create_entity()
-      .with(Background { b_type: BackgroundType::Ground, scroll_pos: 0. })
+      .with(Background {
+        b_type: BackgroundType::Ground,
+        scroll_pos: 0.,
+      })
       .with(ground_sprite)
       .with(Transform::from(Vector3::new(
         BACKGROUND_LOOPING_OFFSET,
         (VIRTUAL_HEIGHT - GROUND_HEIGHT) / -2.,
         1.,
       )))
+      .build();
+    world
+      .create_entity()
+      .with(Bird::default())
+      .with(bird_sprite)
+      .with(Transform::default())
       .build();
   }
 
@@ -153,6 +195,7 @@ fn main() -> amethyst::Result<()> {
 
   let game_data = GameDataBuilder::default()
     .with(BackgroundSystem, "background_system", &[])
+    .with(BirdSystem, "bird_system", &[])
     .with_bundle(TransformBundle::new())?
     .with_bundle(
       RenderingBundle::<DefaultBackend>::new()
