@@ -1,11 +1,12 @@
 use amethyst::assets::{AssetStorage, Loader};
 use amethyst::core::ecs::{
-  Builder, Component, DenseVecStorage, Join, Read, System, World,
-  WorldExt, WriteStorage,
+  Builder, Component, DenseVecStorage, Join, Read, System, World, WorldExt, WriteStorage,
 };
 use amethyst::core::math::Vector3;
 use amethyst::core::{Time, Transform, TransformBundle};
-use amethyst::input::{is_close_requested, is_key_down, StringBindings, VirtualKeyCode};
+use amethyst::input::{
+  is_close_requested, is_key_down, InputBundle, InputHandler, StringBindings, VirtualKeyCode,
+};
 use amethyst::renderer::types::DefaultBackend;
 use amethyst::renderer::{
   Camera, ImageFormat, RenderFlat2D, RenderToWindow, RenderingBundle, SpriteRender, SpriteSheet,
@@ -23,6 +24,8 @@ const BACKGROUND_SCROLL_SPEED: f32 = 30.;
 const GROUND_SCROLL_SPEED: f32 = 60.;
 const BACKGROUND_LOOPING_POINT: f32 = 413.;
 const BACKGROUND_LOOPING_OFFSET: f32 = 290.;
+const BIRD_GRAVITY: f32 = -30.;
+const BIRD_JUMP: f32 = 5.;
 
 #[derive(Debug)]
 enum BackgroundType {
@@ -40,7 +43,7 @@ struct Background {
 #[derive(Debug, Default, Component)]
 #[storage(DenseVecStorage)]
 struct Bird {
-  ticks: f32,
+  dy: f32,
 }
 
 struct BackgroundSystem;
@@ -79,14 +82,16 @@ impl<'a> System<'a> for BirdSystem {
     WriteStorage<'a, Bird>,
     WriteStorage<'a, Transform>,
     Read<'a, Time>,
+    Read<'a, InputHandler<StringBindings>>,
   );
 
-  fn run(&mut self, (mut birds, mut transforms, time): Self::SystemData) {
+  fn run(&mut self, (mut birds, mut transforms, time, input): Self::SystemData) {
     for (bird, transform) in (&mut birds, &mut transforms).join() {
-      bird.ticks += time.delta_seconds();
-      transform.set_translation_y(
-        30. * f32::sin(bird.ticks * 0.5 * std::f32::consts::PI)
-      );
+      bird.dy = bird.dy + BIRD_GRAVITY * time.delta_seconds();
+      if input.key_is_down(VirtualKeyCode::Space) {
+        bird.dy = BIRD_JUMP;
+      }
+      transform.prepend_translation_y(bird.dy);
     }
   }
 }
@@ -197,6 +202,7 @@ fn main() -> amethyst::Result<()> {
     .with(BackgroundSystem, "background_system", &[])
     .with(BirdSystem, "bird_system", &[])
     .with_bundle(TransformBundle::new())?
+    .with_bundle(InputBundle::<StringBindings>::new())?
     .with_bundle(
       RenderingBundle::<DefaultBackend>::new()
         .with_plugin(
