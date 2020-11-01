@@ -1,6 +1,7 @@
 use amethyst::assets::{AssetStorage, Loader};
 use amethyst::core::ecs::{
-  Builder, Component, DenseVecStorage, Join, Read, System, World, WorldExt, WriteStorage,
+  Builder, Component, DenseVecStorage, Entities, Join, NullStorage, Read, ReadStorage, System,
+  World, WorldExt, WriteStorage,
 };
 use amethyst::core::math::Vector3;
 use amethyst::core::{Time, Transform, TransformBundle};
@@ -26,6 +27,8 @@ const BACKGROUND_LOOPING_POINT: f32 = 413.;
 const BACKGROUND_LOOPING_OFFSET: f32 = 290.;
 const BIRD_GRAVITY: f32 = -30.;
 const BIRD_JUMP: f32 = 5.;
+const PIPE_SCROLL: f32 = -60.;
+const PIPE_WIDTH: f32 = 70.;
 
 #[derive(Debug)]
 enum BackgroundType {
@@ -45,6 +48,10 @@ struct Background {
 struct Bird {
   dy: f32,
 }
+
+#[derive(Debug, Default, Component)]
+#[storage(NullStorage)]
+struct Pipe;
 
 struct BackgroundSystem;
 
@@ -87,11 +94,33 @@ impl<'a> System<'a> for BirdSystem {
 
   fn run(&mut self, (mut birds, mut transforms, time, input): Self::SystemData) {
     for (bird, transform) in (&mut birds, &mut transforms).join() {
-      bird.dy = bird.dy + BIRD_GRAVITY * time.delta_seconds();
+      bird.dy += BIRD_GRAVITY * time.delta_seconds();
       if input.key_is_down(VirtualKeyCode::Space) {
         bird.dy = BIRD_JUMP;
       }
       transform.prepend_translation_y(bird.dy);
+    }
+  }
+}
+
+struct PipeSystem;
+
+impl<'a> System<'a> for PipeSystem {
+  type SystemData = (
+    Entities<'a>,
+    ReadStorage<'a, Pipe>,
+    WriteStorage<'a, Transform>,
+    Read<'a, Time>,
+  );
+
+  fn run(&mut self, (entities, pipes, mut transforms, time): Self::SystemData) {
+    for (e, _, transform) in (&entities, &pipes, &mut transforms).join() {
+      transform.prepend_translation_x(PIPE_SCROLL * time.delta_seconds());
+      if transform.translation().x < VIRTUAL_WIDTH / -2. - PIPE_WIDTH {
+        entities
+          .delete(e)
+          .expect("Error while removing non existing entity! This should never happened!");
+      }
     }
   }
 }
@@ -128,7 +157,11 @@ where
   SpriteRender::new(sprite_handle, number)
 }
 
-struct Flappy;
+#[derive(Default)]
+struct Flappy {
+  pipe_spawn_timer: Option<f32>,
+  pipe_sprite: Option<SpriteRender>,
+}
 
 impl SimpleState for Flappy {
   fn on_start(&mut self, _data: StateData<'_, GameData<'_, '_>>) {
@@ -137,6 +170,9 @@ impl SimpleState for Flappy {
       load_sprite("texture/background.png", "texture/background.ron", 0, world);
     let ground_sprite = load_sprite("texture/ground.png", "texture/ground.ron", 0, world);
     let bird_sprite = load_sprite("texture/bird.png", "texture/bird.ron", 0, world);
+    let pipe_sprite = load_sprite("texture/pipe.png", "texture/pipe.ron", 0, world);
+    self.pipe_spawn_timer.replace(2.);
+    self.pipe_sprite.replace(pipe_sprite);
 
     init_camera(world);
     world
@@ -162,14 +198,14 @@ impl SimpleState for Flappy {
       .with(Transform::from(Vector3::new(
         BACKGROUND_LOOPING_OFFSET,
         (VIRTUAL_HEIGHT - GROUND_HEIGHT) / -2.,
-        1.,
+        2.,
       )))
       .build();
     world
       .create_entity()
       .with(Bird::default())
       .with(bird_sprite)
-      .with(Transform::default())
+      .with(Transform::from(Vector3::new(0., 0., 3.)))
       .build();
   }
 
@@ -189,6 +225,34 @@ impl SimpleState for Flappy {
       Trans::None
     }
   }
+
+  fn update(&mut self, data: &mut StateData<'_, GameData<'_, '_>>) -> SimpleTrans {
+    if let Some(mut timer) = self.pipe_spawn_timer.take() {
+      {
+        let time = data.world.fetch::<Time>();
+        timer -= time.delta_seconds();
+      }
+      if timer <= 0.0 {
+        if let Some(sprite) = self.pipe_sprite.clone() {
+          data
+            .world
+            .create_entity()
+            .with(Pipe::default())
+            .with(sprite)
+            .with(Transform::from(Vector3::new(
+              VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
+              -VIRTUAL_HEIGHT / 2. - 40.,
+              4.,
+            )))
+            .build();
+        }
+        self.pipe_spawn_timer.replace(2.);
+      } else {
+        self.pipe_spawn_timer.replace(timer);
+      }
+    }
+    Trans::None
+  }
 }
 
 fn main() -> amethyst::Result<()> {
@@ -201,6 +265,7 @@ fn main() -> amethyst::Result<()> {
   let game_data = GameDataBuilder::default()
     .with(BackgroundSystem, "background_system", &[])
     .with(BirdSystem, "bird_system", &[])
+    .with(PipeSystem, "pipe_system", &[])
     .with_bundle(TransformBundle::new())?
     .with_bundle(InputBundle::<StringBindings>::new())?
     .with_bundle(
@@ -211,7 +276,7 @@ fn main() -> amethyst::Result<()> {
         .with_plugin(RenderFlat2D::default()),
     )?;
 
-  let mut game = Application::new(assets_dir, Flappy, game_data)?;
+  let mut game = Application::new(assets_dir, Flappy::default(), game_data)?;
   game.run();
   Ok(())
 }
