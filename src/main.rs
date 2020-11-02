@@ -244,30 +244,31 @@ impl SimpleState for Flappy {
         if let Some(sprite) = self.pipe_sprite.clone() {
           if let Some(mut rand) = self.rand {
             let random_y = rand.gen_range(-40., 40.);
-            let mut transform1 = Transform::from(Vector3::new(
-              VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
-              VIRTUAL_HEIGHT / 2. + random_y + PIPE_GAP / 2.,
-              3.,
-            ));
-            transform1.set_rotation_2d(std::f32::consts::PI);
-            let transform2 = Transform::from(Vector3::new(
-              VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
-              -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
-              3.,
-            ));
             data
               .world
               .create_entity()
               .with(Pipe::default())
               .with(sprite.clone())
-              .with(transform1)
+              .with(Transform::from(Vector3::new(
+                  VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
+                  -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
+                  3.,
+                )))
               .build();
             data
               .world
               .create_entity()
               .with(Pipe::default())
               .with(sprite)
-              .with(transform2)
+              .with({
+                let mut transform = Transform::from(Vector3::new(
+                  VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
+                  VIRTUAL_HEIGHT / 2. + random_y + PIPE_GAP / 2.,
+                  3.,
+                ));
+                transform.set_rotation_2d(std::f32::consts::PI);
+                transform
+              })
               .build();
           }
         }
