@@ -17,6 +17,8 @@ use amethyst::utils::application_root_dir;
 use amethyst::{
   Application, GameData, GameDataBuilder, SimpleState, SimpleTrans, StateData, StateEvent, Trans,
 };
+use rand::rngs::ThreadRng;
+use rand::{thread_rng, Rng};
 
 const VIRTUAL_WIDTH: f32 = 512.;
 const VIRTUAL_HEIGHT: f32 = 288.;
@@ -29,6 +31,7 @@ const BIRD_GRAVITY: f32 = -30.;
 const BIRD_JUMP: f32 = 5.;
 const PIPE_SCROLL: f32 = -60.;
 const PIPE_WIDTH: f32 = 70.;
+const PIPE_GAP: f32 = 90.;
 
 #[derive(Debug)]
 enum BackgroundType {
@@ -98,7 +101,9 @@ impl<'a> System<'a> for BirdSystem {
       if input.key_is_down(VirtualKeyCode::Space) {
         bird.dy = BIRD_JUMP;
       }
-      transform.prepend_translation_y(bird.dy);
+      if transform.translation().y > -VIRTUAL_HEIGHT / 2. {
+        transform.prepend_translation_y(bird.dy);
+      }
     }
   }
 }
@@ -161,6 +166,7 @@ where
 struct Flappy {
   pipe_spawn_timer: Option<f32>,
   pipe_sprite: Option<SpriteRender>,
+  rand: Option<ThreadRng>,
 }
 
 impl SimpleState for Flappy {
@@ -173,8 +179,10 @@ impl SimpleState for Flappy {
     let pipe_sprite = load_sprite("texture/pipe.png", "texture/pipe.ron", 0, world);
     self.pipe_spawn_timer.replace(2.);
     self.pipe_sprite.replace(pipe_sprite);
+    self.rand.replace(thread_rng());
 
     init_camera(world);
+
     world
       .create_entity()
       .with(Background {
@@ -205,7 +213,7 @@ impl SimpleState for Flappy {
       .create_entity()
       .with(Bird::default())
       .with(bird_sprite)
-      .with(Transform::from(Vector3::new(0., 0., 3.)))
+      .with(Transform::from(Vector3::new(0., 0., 4.)))
       .build();
   }
 
@@ -234,17 +242,34 @@ impl SimpleState for Flappy {
       }
       if timer <= 0.0 {
         if let Some(sprite) = self.pipe_sprite.clone() {
-          data
-            .world
-            .create_entity()
-            .with(Pipe::default())
-            .with(sprite)
-            .with(Transform::from(Vector3::new(
+          if let Some(mut rand) = self.rand {
+            let random_y = rand.gen_range(-40., 40.);
+            let mut transform1 = Transform::from(Vector3::new(
               VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
-              -VIRTUAL_HEIGHT / 2. - 40.,
-              4.,
-            )))
-            .build();
+              VIRTUAL_HEIGHT / 2. + random_y + PIPE_GAP / 2.,
+              3.,
+            ));
+            transform1.set_rotation_2d(std::f32::consts::PI);
+            let transform2 = Transform::from(Vector3::new(
+              VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
+              -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
+              3.,
+            ));
+            data
+              .world
+              .create_entity()
+              .with(Pipe::default())
+              .with(sprite.clone())
+              .with(transform1)
+              .build();
+            data
+              .world
+              .create_entity()
+              .with(Pipe::default())
+              .with(sprite)
+              .with(transform2)
+              .build();
+          }
         }
         self.pipe_spawn_timer.replace(2.);
       } else {
