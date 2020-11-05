@@ -1,22 +1,25 @@
 use amethyst::assets::{AssetStorage, Loader};
 use amethyst::core::ecs::{
   Builder, Component, DenseVecStorage, Entities, Join, NullStorage, Read, ReadStorage, System,
-  World, WorldExt, WriteStorage,
+  SystemData, World, WorldExt, Write, WriteStorage,
 };
 use amethyst::core::math::Vector3;
-use amethyst::core::{Time, Transform, TransformBundle};
+use amethyst::core::{EventReader, Time, Transform, TransformBundle};
+use amethyst::derive::EventReader;
 use amethyst::input::{
-  is_close_requested, is_key_down, InputBundle, InputHandler, StringBindings, VirtualKeyCode,
+  is_close_requested, is_key_down, BindingTypes, InputBundle, InputEvent, InputHandler,
+  StringBindings, VirtualKeyCode,
 };
 use amethyst::renderer::types::DefaultBackend;
 use amethyst::renderer::{
   Camera, ImageFormat, RenderFlat2D, RenderToWindow, RenderingBundle, SpriteRender, SpriteSheet,
   SpriteSheetFormat, Texture,
 };
+use amethyst::shrev::{EventChannel, ReaderId};
+use amethyst::ui::UiEvent;
 use amethyst::utils::application_root_dir;
-use amethyst::{
-  Application, GameData, GameDataBuilder, SimpleState, SimpleTrans, StateData, StateEvent, Trans,
-};
+use amethyst::winit::Event;
+use amethyst::{CoreApplication, GameData, GameDataBuilder, State, StateData, Trans};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 
@@ -40,6 +43,23 @@ const PIPE_GAP: f32 = 90.;
 enum BackgroundType {
   Background,
   Ground,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameEvent {
+  Collision,
+}
+
+#[derive(Clone, Debug, EventReader)]
+#[reader(MyStateEventReader)]
+pub enum MyStateEvent<T = StringBindings>
+where
+  T: BindingTypes + Clone,
+{
+  Window(Event),
+  Ui(UiEvent),
+  Input(InputEvent<T>),
+  Game(GameEvent),
 }
 
 #[derive(Debug, Component)]
@@ -140,9 +160,10 @@ impl<'a> System<'a> for CollisionSystem {
     ReadStorage<'a, Bird>,
     ReadStorage<'a, Pipe>,
     ReadStorage<'a, Transform>,
+    Write<'a, EventChannel<GameEvent>>,
   );
 
-  fn run(&mut self, (birds, pipes, transforms): Self::SystemData) {
+  fn run(&mut self, (birds, pipes, transforms, mut event_ch): Self::SystemData) {
     for (_, transform) in (&birds, &transforms).join() {
       let bird_x = transform.translation().x;
       let bird_y = transform.translation().y;
@@ -159,56 +180,21 @@ impl<'a> System<'a> for CollisionSystem {
           pipe_x + PIPE_WIDTH + BIRD_WIDTH / 2.,
           pipe_y + PIPE_HEIGHT + BIRD_HEIGHT / 2.,
         ) {
-          println!("collision!");
+          event_ch.single_write(GameEvent::Collision);
         }
       }
     }
   }
 }
-fn point_in_rect(x: f32, y: f32, left: f32, bottom: f32, right: f32, top: f32) -> bool {
-  x >= left && x <= right && y >= bottom && y <= top
-}
-
-fn init_camera(world: &mut World) {
-  world
-    .create_entity()
-    .with(Camera::standard_2d(VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
-    .with(Transform::from(Vector3::new(0., 0., 10.)))
-    .build();
-}
-
-fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
-where
-  T: Into<String>,
-{
-  let texture_handle = {
-    let loader = world.read_resource::<Loader>();
-    let texture_storage = world.read_resource::<AssetStorage<Texture>>();
-    loader.load(image, ImageFormat::default(), (), &texture_storage)
-  };
-
-  let sprite_handle = {
-    let loader = world.read_resource::<Loader>();
-    let sprite_sheet_store = world.read_resource::<AssetStorage<SpriteSheet>>();
-    loader.load(
-      ron,
-      SpriteSheetFormat(texture_handle),
-      (),
-      &sprite_sheet_store,
-    )
-  };
-
-  SpriteRender::new(sprite_handle, number)
-}
 
 #[derive(Default)]
-struct Flappy {
+struct PlayState {
   pipe_spawn_timer: Option<f32>,
   pipe_sprite: Option<SpriteRender>,
   rand: Option<ThreadRng>,
 }
 
-impl SimpleState for Flappy {
+impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
   fn on_start(&mut self, _data: StateData<'_, GameData<'_, '_>>) {
     let world = _data.world;
     let background_sprite =
@@ -259,21 +245,23 @@ impl SimpleState for Flappy {
   fn handle_event(
     &mut self,
     _data: StateData<'_, GameData<'_, '_>>,
-    event: StateEvent<StringBindings>,
-  ) -> SimpleTrans {
-    let StateData { .. } = _data;
-    if let StateEvent::Window(event) = &event {
+    event: MyStateEvent,
+  ) -> Trans<GameData<'a, 'b>, MyStateEvent> {
+    if let MyStateEvent::Window(event) = &event {
       if is_close_requested(&event) || is_key_down(&event, VirtualKeyCode::Escape) {
-        Trans::Quit
-      } else {
-        Trans::None
+        return Trans::Quit;
       }
-    } else {
-      Trans::None
     }
+    if let MyStateEvent::Game(GameEvent::Collision) = event {
+      println!("collision");
+    }
+    Trans::None
   }
 
-  fn update(&mut self, data: &mut StateData<'_, GameData<'_, '_>>) -> SimpleTrans {
+  fn update(
+    &mut self,
+    data: StateData<'_, GameData<'a, 'b>>,
+  ) -> Trans<GameData<'a, 'b>, MyStateEvent> {
     if let Some(mut timer) = self.pipe_spawn_timer.take() {
       {
         let time = data.world.fetch::<Time>();
@@ -316,8 +304,45 @@ impl SimpleState for Flappy {
         self.pipe_spawn_timer.replace(timer);
       }
     }
+    data.data.update(&data.world);
     Trans::None
   }
+}
+
+fn point_in_rect(x: f32, y: f32, left: f32, bottom: f32, right: f32, top: f32) -> bool {
+  x >= left && x <= right && y >= bottom && y <= top
+}
+
+fn init_camera(world: &mut World) {
+  world
+    .create_entity()
+    .with(Camera::standard_2d(VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
+    .with(Transform::from(Vector3::new(0., 0., 10.)))
+    .build();
+}
+
+fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
+where
+  T: Into<String>,
+{
+  let texture_handle = {
+    let loader = world.read_resource::<Loader>();
+    let texture_storage = world.read_resource::<AssetStorage<Texture>>();
+    loader.load(image, ImageFormat::default(), (), &texture_storage)
+  };
+
+  let sprite_handle = {
+    let loader = world.read_resource::<Loader>();
+    let sprite_sheet_store = world.read_resource::<AssetStorage<SpriteSheet>>();
+    loader.load(
+      ron,
+      SpriteSheetFormat(texture_handle),
+      (),
+      &sprite_sheet_store,
+    )
+  };
+
+  SpriteRender::new(sprite_handle, number)
 }
 
 fn main() -> amethyst::Result<()> {
@@ -331,7 +356,11 @@ fn main() -> amethyst::Result<()> {
     .with(BackgroundSystem, "background_system", &[])
     .with(BirdSystem, "bird_system", &[])
     .with(PipeSystem, "pipe_system", &[])
-    .with(CollisionSystem, "collision_system", &["bird_system", "pipe_system"])
+    .with(
+      CollisionSystem,
+      "collision_system",
+      &["bird_system", "pipe_system"],
+    )
     .with_bundle(TransformBundle::new())?
     .with_bundle(InputBundle::<StringBindings>::new())?
     .with_bundle(
@@ -341,8 +370,11 @@ fn main() -> amethyst::Result<()> {
         )
         .with_plugin(RenderFlat2D::default()),
     )?;
-
-  let mut game = Application::new(assets_dir, Flappy::default(), game_data)?;
+  let mut game = CoreApplication::<_, MyStateEvent, MyStateEventReader>::build(
+    assets_dir,
+    PlayState::default(),
+  )?
+  .build(game_data)?;
   game.run();
   Ok(())
 }
