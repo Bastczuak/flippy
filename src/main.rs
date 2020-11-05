@@ -28,9 +28,12 @@ const GROUND_SCROLL_SPEED: f32 = 60.;
 const BACKGROUND_LOOPING_POINT: f32 = 413.;
 const BACKGROUND_LOOPING_OFFSET: f32 = 290.;
 const BIRD_GRAVITY: f32 = -30.;
+const BIRD_WIDTH: f32 = 38.;
+const BIRD_HEIGHT: f32 = 24.;
 const BIRD_JUMP: f32 = 5.;
 const PIPE_SCROLL: f32 = -60.;
 const PIPE_WIDTH: f32 = 70.;
+const PIPE_HEIGHT: f32 = 288.;
 const PIPE_GAP: f32 = 90.;
 
 #[derive(Debug)]
@@ -128,6 +131,42 @@ impl<'a> System<'a> for PipeSystem {
       }
     }
   }
+}
+
+struct CollisionSystem;
+
+impl<'a> System<'a> for CollisionSystem {
+  type SystemData = (
+    ReadStorage<'a, Bird>,
+    ReadStorage<'a, Pipe>,
+    ReadStorage<'a, Transform>,
+  );
+
+  fn run(&mut self, (birds, pipes, transforms): Self::SystemData) {
+    for (_, transform) in (&birds, &transforms).join() {
+      let bird_x = transform.translation().x;
+      let bird_y = transform.translation().y;
+
+      for (_, transform) in (&pipes, &transforms).join() {
+        let pipe_x = transform.translation().x - (PIPE_WIDTH / 2.);
+        let pipe_y = transform.translation().y - (PIPE_HEIGHT / 2.);
+
+        if point_in_rect(
+          bird_x,
+          bird_y,
+          pipe_x - BIRD_WIDTH / 2.,
+          pipe_y - BIRD_HEIGHT / 2.,
+          pipe_x + PIPE_WIDTH + BIRD_WIDTH / 2.,
+          pipe_y + PIPE_HEIGHT + BIRD_HEIGHT / 2.,
+        ) {
+          println!("collision!");
+        }
+      }
+    }
+  }
+}
+fn point_in_rect(x: f32, y: f32, left: f32, bottom: f32, right: f32, top: f32) -> bool {
+  x >= left && x <= right && y >= bottom && y <= top
 }
 
 fn init_camera(world: &mut World) {
@@ -250,10 +289,10 @@ impl SimpleState for Flappy {
               .with(Pipe::default())
               .with(sprite.clone())
               .with(Transform::from(Vector3::new(
-                  VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
-                  -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
-                  3.,
-                )))
+                VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
+                -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
+                3.,
+              )))
               .build();
             data
               .world
@@ -292,6 +331,7 @@ fn main() -> amethyst::Result<()> {
     .with(BackgroundSystem, "background_system", &[])
     .with(BirdSystem, "bird_system", &[])
     .with(PipeSystem, "pipe_system", &[])
+    .with(CollisionSystem, "collision_system", &["bird_system", "pipe_system"])
     .with_bundle(TransformBundle::new())?
     .with_bundle(InputBundle::<StringBindings>::new())?
     .with_bundle(
