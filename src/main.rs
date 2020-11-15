@@ -1,7 +1,7 @@
 use amethyst::assets::{AssetStorage, Loader};
 use amethyst::core::ecs::{
-  Builder, Component, DenseVecStorage, Dispatcher, DispatcherBuilder, Entities, Join, NullStorage,
-  Read, ReadStorage, System, SystemData, World, WorldExt, Write, WriteStorage,
+  Builder, Component, DenseVecStorage, Dispatcher, DispatcherBuilder, Entities, Entity, Join, Read,
+  ReadStorage, System, SystemData, World, WorldExt, Write, WriteStorage,
 };
 use amethyst::core::math::Vector3;
 use amethyst::core::{EventReader, Time, Transform, TransformBundle};
@@ -15,8 +15,9 @@ use amethyst::renderer::{
   Camera, ImageFormat, RenderFlat2D, RenderToWindow, RenderingBundle, SpriteRender, SpriteSheet,
   SpriteSheetFormat, Texture,
 };
+use amethyst::shred::ReadExpect;
 use amethyst::shrev::{EventChannel, ReaderId};
-use amethyst::ui::UiEvent;
+use amethyst::ui::{Anchor, LineMode, RenderUi, TtfFormat, UiBundle, UiEvent, UiText, UiTransform};
 use amethyst::utils::application_root_dir;
 use amethyst::winit::Event;
 use amethyst::{CoreApplication, GameData, GameDataBuilder, State, StateData, Trans};
@@ -51,6 +52,10 @@ pub enum GameEvent {
   Collision,
 }
 
+struct Score {
+  text: Entity,
+}
+
 #[derive(Clone, Debug, EventReader)]
 #[reader(MyStateEventReader)]
 pub enum MyStateEvent<T = StringBindings>
@@ -74,11 +79,14 @@ struct Background {
 #[storage(DenseVecStorage)]
 struct Bird {
   dy: f32,
+  score: i32,
 }
 
 #[derive(Debug, Default, Component)]
-#[storage(NullStorage)]
-struct Pipe;
+#[storage(DenseVecStorage)]
+struct Pipe {
+  is_scored: bool,
+}
 
 struct BackgroundSystem;
 
@@ -208,41 +216,50 @@ impl<'a> System<'a> for CollisionSystem {
   }
 }
 
-#[derive(Default)]
-struct PlayState<'a, 'b> {
-  pipe_spawn_timer: Option<f32>,
-  pipe_sprite: Option<SpriteRender>,
-  rand: Option<ThreadRng>,
-  dispatcher: Option<Dispatcher<'a, 'b>>,
+struct ScoreSystem;
+
+impl<'a> System<'a> for ScoreSystem {
+  type SystemData = (
+    WriteStorage<'a, Bird>,
+    WriteStorage<'a, Pipe>,
+    ReadStorage<'a, Transform>,
+    WriteStorage<'a, UiText>,
+    ReadExpect<'a, Score>,
+  );
+
+  fn run(&mut self, (mut birds, mut pipes, transforms, mut ui_text, score): Self::SystemData) {
+    for (bird, transform) in (&mut birds, &transforms).join() {
+      let bird_x = transform.translation().x;
+
+      for (pipe, transform) in (&mut pipes, &transforms).join() {
+        let pipe_x = transform.translation().x + (PIPE_WIDTH / 2.);
+        let pipe_y = transform.translation().y + (PIPE_HEIGHT / 2.);
+
+        if !pipe.is_scored && pipe_x < bird_x && pipe_y < 0. {
+          pipe.is_scored = true;
+          bird.score += 1;
+
+          if let Some(text) = ui_text.get_mut(score.text) {
+            text.text = bird.score.to_string();
+          }
+        }
+      }
+    }
+  }
 }
 
-impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState<'a, 'b> {
+#[derive(Default)]
+struct TitleScreenState;
+
+impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for TitleScreenState {
   fn on_start(&mut self, _data: StateData<'_, GameData<'_, '_>>) {
     let world = _data.world;
 
-    let mut dispatcher_builder = DispatcherBuilder::new();
-    dispatcher_builder.add(BackgroundSystem, "background_system", &[]);
-    dispatcher_builder.add(BirdSystem, "bird_system", &[]);
-    dispatcher_builder.add(PipeSystem, "pipe_system", &[]);
-    dispatcher_builder.add(
-      CollisionSystem,
-      "collision_system",
-      &["bird_system", "pipe_system"],
-    );
-    let mut dispatcher = dispatcher_builder.build();
-    dispatcher.setup(world);
-    self.dispatcher = Some(dispatcher);
+    init_camera(world);
 
     let background_sprite =
       load_sprite("texture/background.png", "texture/background.ron", 0, world);
     let ground_sprite = load_sprite("texture/ground.png", "texture/ground.ron", 0, world);
-    let bird_sprite = load_sprite("texture/bird.png", "texture/bird.ron", 0, world);
-    let pipe_sprite = load_sprite("texture/pipe.png", "texture/pipe.ron", 0, world);
-    self.pipe_spawn_timer.replace(2.);
-    self.pipe_sprite.replace(pipe_sprite);
-    self.rand.replace(thread_rng());
-
-    init_camera(world);
 
     world
       .create_entity()
@@ -257,6 +274,7 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState<'a, 'b> {
         0.,
       )))
       .build();
+
     world
       .create_entity()
       .with(Background {
@@ -270,12 +288,111 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState<'a, 'b> {
         2.,
       )))
       .build();
+  }
+
+  fn handle_event(
+    &mut self,
+    _data: StateData<'_, GameData<'_, '_>>,
+    event: MyStateEvent,
+  ) -> Trans<GameData<'a, 'b>, MyStateEvent> {
+    if let MyStateEvent::Window(event) = &event {
+      if is_close_requested(&event) || is_key_down(&event, VirtualKeyCode::Escape) {
+        return Trans::Quit;
+      }
+      if is_key_down(&event, VirtualKeyCode::Space) {
+        return Trans::Push(Box::new(PlayState::default()));
+      }
+    }
+    Trans::None
+  }
+
+  fn update(
+    &mut self,
+    data: StateData<'_, GameData<'a, 'b>>,
+  ) -> Trans<GameData<'a, 'b>, MyStateEvent<StringBindings>> {
+    data.data.update(&data.world);
+    Trans::None
+  }
+}
+
+#[derive(Default)]
+struct PlayState {
+  pipe_spawn_timer: Option<f32>,
+  pipe_sprite: Option<SpriteRender>,
+  bird_sprite: Option<SpriteRender>,
+  rand: Option<ThreadRng>,
+  dispatcher: Option<Dispatcher<'static, 'static>>,
+}
+
+impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
+  fn on_start(&mut self, _data: StateData<'_, GameData<'_, '_>>) {
+    let world = _data.world;
+
+    let mut dispatcher_builder = DispatcherBuilder::new();
+    dispatcher_builder.add(BirdSystem, "bird_system", &[]);
+    dispatcher_builder.add(PipeSystem, "pipe_system", &[]);
+    dispatcher_builder.add(
+      CollisionSystem,
+      "collision_system",
+      &["bird_system", "pipe_system"],
+    );
+    dispatcher_builder.add(
+      ScoreSystem,
+      "score_system",
+      &["bird_system", "pipe_system"],
+    );
+    let mut dispatcher = dispatcher_builder.build();
+    dispatcher.setup(world);
+    self.dispatcher = Some(dispatcher);
+
+    let pipe_sprite = load_sprite("texture/pipe.png", "texture/pipe.ron", 0, world);
+    let bird_sprite = load_sprite("texture/bird.png", "texture/bird.ron", 0, world);
+    self.pipe_spawn_timer.replace(2.);
+    self.pipe_sprite.replace(pipe_sprite);
+    self.bird_sprite.replace(bird_sprite.clone());
+    self.rand.replace(thread_rng());
+
+    init_font(world);
+
     world
       .create_entity()
       .with(Bird::default())
       .with(bird_sprite)
       .with(Transform::from(Vector3::new(0., 0., 4.)))
       .build();
+  }
+
+  fn on_pause(&mut self, data: StateData<'_, GameData<'a, 'b>>) {
+    let entities = data.world.entities();
+    let pipes = data.world.read_storage::<Pipe>();
+    for (e, _) in (&entities, &pipes).join() {
+      entities
+        .delete(e)
+        .expect("Couldn't delete pipe entity while state was paused!");
+    }
+    let birds = data.world.read_storage::<Bird>();
+    for (e, _) in (&entities, &birds).join() {
+      entities
+        .delete(e)
+        .expect("Couldn't delete bird entity while state was paused!");
+    }
+    let score = data.world.read_resource::<Score>();
+    let mut ui_text = data.world.write_storage::<UiText>();
+    if let Some(text) = ui_text.get_mut(score.text) {
+      text.text = "0".to_string();
+    }
+  }
+
+  fn on_resume(&mut self, data: StateData<'_, GameData<'a, 'b>>) {
+    if let Some(sprite) = self.bird_sprite.clone() {
+      data
+        .world
+        .create_entity()
+        .with(Bird::default())
+        .with(sprite)
+        .with(Transform::from(Vector3::new(0., 0., 4.)))
+        .build();
+    }
   }
 
   fn handle_event(
@@ -298,6 +415,7 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState<'a, 'b> {
     &mut self,
     data: StateData<'_, GameData<'a, 'b>>,
   ) -> Trans<GameData<'a, 'b>, MyStateEvent> {
+    let mut rand = self.rand.unwrap_or(thread_rng());
     if let Some(mut timer) = self.pipe_spawn_timer.take() {
       {
         let time = data.world.fetch::<Time>();
@@ -305,37 +423,37 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState<'a, 'b> {
       }
       if timer <= 0.0 {
         if let Some(sprite) = self.pipe_sprite.clone() {
-          if let Some(mut rand) = self.rand {
-            let random_y = rand.gen_range(-40., 40.);
-            data
-              .world
-              .create_entity()
-              .with(Pipe::default())
-              .with(sprite.clone())
-              .with(Transform::from(Vector3::new(
+          let rand_bot = rand.gen_range(-40., -20.);
+          let rand_top = rand.gen_range(20., 40.);
+          let random_y = rand.gen_range(rand_bot, rand_top);
+          data
+            .world
+            .create_entity()
+            .with(Pipe::default())
+            .with(sprite.clone())
+            .with(Transform::from(Vector3::new(
+              VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
+              -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
+              3.,
+            )))
+            .build();
+          data
+            .world
+            .create_entity()
+            .with(Pipe::default())
+            .with(sprite)
+            .with({
+              let mut transform = Transform::from(Vector3::new(
                 VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
-                -VIRTUAL_HEIGHT / 2. + random_y - PIPE_GAP / 2.,
+                VIRTUAL_HEIGHT / 2. + random_y + PIPE_GAP / 2.,
                 3.,
-              )))
-              .build();
-            data
-              .world
-              .create_entity()
-              .with(Pipe::default())
-              .with(sprite)
-              .with({
-                let mut transform = Transform::from(Vector3::new(
-                  VIRTUAL_WIDTH / 2. + PIPE_WIDTH,
-                  VIRTUAL_HEIGHT / 2. + random_y + PIPE_GAP / 2.,
-                  3.,
-                ));
-                transform.set_rotation_2d(std::f32::consts::PI);
-                transform
-              })
-              .build();
-          }
+              ));
+              transform.set_rotation_2d(std::f32::consts::PI);
+              transform
+            })
+            .build();
         }
-        self.pipe_spawn_timer.replace(2.);
+        self.pipe_spawn_timer.replace(rand.gen_range(2., 4.));
       } else {
         self.pipe_spawn_timer.replace(timer);
       }
@@ -355,23 +473,11 @@ struct PauseState;
 impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PauseState {
   fn handle_event(
     &mut self,
-    data: StateData<'_, GameData<'a, 'b>>,
+    _data: StateData<'_, GameData<'a, 'b>>,
     event: MyStateEvent<StringBindings>,
   ) -> Trans<GameData<'a, 'b>, MyStateEvent<StringBindings>> {
     if let MyStateEvent::Window(event) = &event {
       if is_key_down(&event, VirtualKeyCode::Space) {
-        let entities = data.world.entities();
-        let pipes = data.world.read_storage::<Pipe>();
-        let birds = data.world.read_storage::<Bird>();
-        let mut transforms = data.world.write_storage::<Transform>();
-        for (_, transform) in (&birds, &mut transforms).join() {
-          transform.set_translation(Vector3::new(0., 0., 4.));
-        }
-        for (e, _) in (&entities, &pipes).join() {
-          entities
-            .delete(e)
-            .expect("Couldn't delete pipe entity while state was paused!");
-        }
         Trans::Pop
       } else if is_close_requested(&event) || is_key_down(&event, VirtualKeyCode::Escape) {
         Trans::Quit
@@ -402,6 +508,37 @@ fn init_camera(world: &mut World) {
     .with(Camera::standard_2d(VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
     .with(Transform::from(Vector3::new(0., 0., 10.)))
     .build();
+}
+
+fn init_font(world: &mut World) {
+  let font =
+    world
+      .read_resource::<Loader>()
+      .load("font/square.ttf", TtfFormat, (), &world.read_resource());
+
+  let text = world
+    .create_entity()
+    .with(UiTransform::new(
+      "score".to_string(),
+      Anchor::TopMiddle,
+      Anchor::TopMiddle,
+      0.,
+      -50.,
+      1.,
+      400.,
+      200.,
+    ))
+    .with(UiText::new(
+      font,
+      "0".to_string(),
+      [1., 1., 1., 1.],
+      100.,
+      LineMode::Single,
+      Anchor::Middle,
+    ))
+    .build();
+
+  world.insert(Score { text });
 }
 
 fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
@@ -436,18 +573,21 @@ fn main() -> amethyst::Result<()> {
   let assets_dir = app_root.join("assets");
 
   let game_data = GameDataBuilder::default()
+    .with(BackgroundSystem, "background_system", &[])
     .with_bundle(TransformBundle::new())?
     .with_bundle(InputBundle::<StringBindings>::new())?
+    .with_bundle(UiBundle::<StringBindings>::new())?
     .with_bundle(
       RenderingBundle::<DefaultBackend>::new()
         .with_plugin(
           RenderToWindow::from_config_path(display_conf_path)?.with_clear([0.0, 0.0, 0.0, 1.0]),
         )
+        .with_plugin(RenderUi::default())
         .with_plugin(RenderFlat2D::default()),
     )?;
   let mut game = CoreApplication::<_, MyStateEvent, MyStateEventReader>::build(
     assets_dir,
-    PlayState::default(),
+    TitleScreenState::default(),
   )?
   .build(game_data)?;
   game.run();
