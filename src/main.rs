@@ -288,6 +288,33 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for TitleScreenState {
         2.,
       )))
       .build();
+
+    let font =
+      world
+        .read_resource::<Loader>()
+        .load("font/square.ttf", TtfFormat, (), &world.read_resource());
+
+    world
+      .create_entity()
+      .with(UiTransform::new(
+        "title".to_string(),
+        Anchor::TopMiddle,
+        Anchor::TopMiddle,
+        0.,
+        -50.,
+        1.,
+        400.,
+        200.,
+      ))
+      .with(UiText::new(
+        font,
+        "Flippy ".to_string(),
+        [1., 1., 1., 1.],
+        100.,
+        LineMode::Wrap,
+        Anchor::Middle,
+      ))
+      .build();
   }
 
   fn handle_event(
@@ -336,11 +363,7 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
       "collision_system",
       &["bird_system", "pipe_system"],
     );
-    dispatcher_builder.add(
-      ScoreSystem,
-      "score_system",
-      &["bird_system", "pipe_system"],
-    );
+    dispatcher_builder.add(ScoreSystem, "score_system", &["bird_system", "pipe_system"]);
     let mut dispatcher = dispatcher_builder.build();
     dispatcher.setup(world);
     self.dispatcher = Some(dispatcher);
@@ -352,7 +375,34 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
     self.bird_sprite.replace(bird_sprite.clone());
     self.rand.replace(thread_rng());
 
-    init_font(world);
+    let font =
+      world
+        .read_resource::<Loader>()
+        .load("font/square.ttf", TtfFormat, (), &world.read_resource());
+
+    let text = world
+      .create_entity()
+      .with(UiTransform::new(
+        "score".to_string(),
+        Anchor::TopMiddle,
+        Anchor::TopMiddle,
+        0.,
+        -50.,
+        1.,
+        400.,
+        200.,
+      ))
+      .with(UiText::new(
+        font,
+        "0".to_string(),
+        [1., 1., 1., 1.],
+        100.,
+        LineMode::Single,
+        Anchor::Middle,
+      ))
+      .build();
+
+    world.insert(Score { text });
 
     world
       .create_entity()
@@ -376,14 +426,12 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
         .delete(e)
         .expect("Couldn't delete bird entity while state was paused!");
     }
-    let score = data.world.read_resource::<Score>();
-    let mut ui_text = data.world.write_storage::<UiText>();
-    if let Some(text) = ui_text.get_mut(score.text) {
-      text.text = "0".to_string();
-    }
+    set_score_font(data.world, "");
   }
 
   fn on_resume(&mut self, data: StateData<'_, GameData<'a, 'b>>) {
+    set_score_font(data.world, "0");
+
     if let Some(sprite) = self.bird_sprite.clone() {
       data
         .world
@@ -510,35 +558,13 @@ fn init_camera(world: &mut World) {
     .build();
 }
 
-fn init_font(world: &mut World) {
-  let font =
-    world
-      .read_resource::<Loader>()
-      .load("font/square.ttf", TtfFormat, (), &world.read_resource());
 
-  let text = world
-    .create_entity()
-    .with(UiTransform::new(
-      "score".to_string(),
-      Anchor::TopMiddle,
-      Anchor::TopMiddle,
-      0.,
-      -50.,
-      1.,
-      400.,
-      200.,
-    ))
-    .with(UiText::new(
-      font,
-      "0".to_string(),
-      [1., 1., 1., 1.],
-      100.,
-      LineMode::Single,
-      Anchor::Middle,
-    ))
-    .build();
-
-  world.insert(Score { text });
+fn set_score_font(world: &World, str: &str) {
+  let score = world.read_resource::<Score>();
+  let mut ui_text = world.write_storage::<UiText>();
+  if let Some(text) = ui_text.get_mut(score.text) {
+    text.text = str.to_string();
+  }
 }
 
 fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
