@@ -4,7 +4,7 @@ use amethyst::core::ecs::{
   ReadStorage, System, SystemData, World, WorldExt, Write, WriteStorage,
 };
 use amethyst::core::math::Vector3;
-use amethyst::core::{EventReader, Time, Transform, TransformBundle};
+use amethyst::core::{EventReader, Time, Transform, TransformBundle, Hidden};
 use amethyst::derive::EventReader;
 use amethyst::input::{
   is_close_requested, is_key_down, BindingTypes, InputBundle, InputEvent, InputHandler,
@@ -17,7 +17,7 @@ use amethyst::renderer::{
 };
 use amethyst::shred::ReadExpect;
 use amethyst::shrev::{EventChannel, ReaderId};
-use amethyst::ui::{Anchor, LineMode, RenderUi, TtfFormat, UiBundle, UiEvent, UiText, UiTransform};
+use amethyst::ui::{Anchor, LineMode, RenderUi, TtfFormat, UiBundle, UiEvent, UiText, UiTransform, UiCreator, UiFinder};
 use amethyst::utils::application_root_dir;
 use amethyst::winit::Event;
 use amethyst::{CoreApplication, GameData, GameDataBuilder, State, StateData, Trans};
@@ -59,8 +59,8 @@ struct Score {
 #[derive(Clone, Debug, EventReader)]
 #[reader(MyStateEventReader)]
 pub enum MyStateEvent<T = StringBindings>
-where
-  T: BindingTypes + Clone,
+  where
+    T: BindingTypes + Clone,
 {
   Window(Event),
   Ui(UiEvent),
@@ -261,6 +261,10 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for TitleScreenState {
       load_sprite("texture/background.png", "texture/background.ron", 0, world);
     let ground_sprite = load_sprite("texture/ground.png", "texture/ground.ron", 0, world);
 
+    world.exec(|mut creator: UiCreator<'_>| {
+      creator.create("ui/text.ron", ());
+    });
+
     world
       .create_entity()
       .with(Background {
@@ -288,34 +292,29 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for TitleScreenState {
         2.,
       )))
       .build();
-
-    let font =
-      world
-        .read_resource::<Loader>()
-        .load("font/square.ttf", TtfFormat, (), &world.read_resource());
-
-    world
-      .create_entity()
-      .with(UiTransform::new(
-        "title".to_string(),
-        Anchor::TopMiddle,
-        Anchor::TopMiddle,
-        0.,
-        -50.,
-        1.,
-        400.,
-        200.,
-      ))
-      .with(UiText::new(
-        font,
-        "Flippy ".to_string(),
-        [1., 1., 1., 1.],
-        100.,
-        LineMode::Wrap,
-        Anchor::Middle,
-      ))
-      .build();
   }
+
+  fn on_pause(&mut self, data: StateData<'_, GameData<'a, 'b>>) {
+    let world = data.world;
+
+    let mut e_title = None;
+    let mut e_sub_title = None;
+    world.exec(|finder: UiFinder| {
+      e_title = finder.find("title");
+      e_sub_title = finder.find("sub_title");
+    });
+
+    let mut hidden = world.write_storage::<Hidden>();
+
+    if let Some(entity) = e_title {
+      hidden.insert(entity, Hidden).expect("Error while trying to hide title!");
+    }
+
+    if let Some(entity) = e_sub_title {
+      hidden.insert(entity, Hidden).expect("Error while trying to hide sub_title!");
+    }
+  }
+
 
   fn handle_event(
     &mut self,
@@ -378,7 +377,7 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
     let font =
       world
         .read_resource::<Loader>()
-        .load("font/square.ttf", TtfFormat, (), &world.read_resource());
+        .load("font/font.ttf", TtfFormat, (), &world.read_resource());
 
     let text = world
       .create_entity()
@@ -413,33 +412,77 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
   }
 
   fn on_pause(&mut self, data: StateData<'_, GameData<'a, 'b>>) {
-    let entities = data.world.entities();
-    let pipes = data.world.read_storage::<Pipe>();
-    for (e, _) in (&entities, &pipes).join() {
-      entities
-        .delete(e)
-        .expect("Couldn't delete pipe entity while state was paused!");
+    let world = data.world;
+    {
+      let pipes = world.read_storage::<Pipe>();
+      let entities = world.entities();
+      for (e, _) in (&entities, &pipes).join() {
+        entities
+          .delete(e)
+          .expect("Couldn't delete pipe entity while state was paused!");
+      }
+      let birds = world.read_storage::<Bird>();
+      for (e, _) in (&entities, &birds).join() {
+        entities
+          .delete(e)
+          .expect("Couldn't delete bird entity while state was paused!");
+      }
     }
-    let birds = data.world.read_storage::<Bird>();
-    for (e, _) in (&entities, &birds).join() {
-      entities
-        .delete(e)
-        .expect("Couldn't delete bird entity while state was paused!");
+
+    let last_score = set_score_font(world, "");
+
+    let mut e_title = None;
+    let mut e_sub_title = None;
+    world.exec(|finder: UiFinder| {
+      e_title = finder.find("title");
+      e_sub_title = finder.find("sub_title");
+    });
+
+    let mut hidden = world.write_storage::<Hidden>();
+
+    if let Some(entity) = e_title {
+      hidden.remove(entity).expect("Error while trying to show title!");
     }
-    set_score_font(data.world, "");
+
+    if let Some(entity) = e_sub_title {
+      hidden.remove(entity).expect("Error while trying to show sub_title!");
+    }
+
+    let mut ui_text = world.write_storage::<UiText>();
+    if let Some(final_score_display) = e_title.and_then(|entity| ui_text.get_mut(entity)) {
+      final_score_display.text = format!("Your Score: {}", last_score);
+    }
   }
 
   fn on_resume(&mut self, data: StateData<'_, GameData<'a, 'b>>) {
-    set_score_font(data.world, "0");
+    let world = data.world;
+
+    set_score_font(world, "0");
 
     if let Some(sprite) = self.bird_sprite.clone() {
-      data
-        .world
+      world
         .create_entity()
         .with(Bird::default())
         .with(sprite)
         .with(Transform::from(Vector3::new(0., 0., 4.)))
         .build();
+    }
+
+    let mut e_title = None;
+    let mut e_sub_title = None;
+    world.exec(|finder: UiFinder| {
+      e_title = finder.find("title");
+      e_sub_title = finder.find("sub_title");
+    });
+
+    let mut hidden = world.write_storage::<Hidden>();
+
+    if let Some(entity) = e_title {
+      hidden.insert(entity, Hidden).expect("Error while trying to hide title!");
+    }
+
+    if let Some(entity) = e_sub_title {
+      hidden.insert(entity, Hidden).expect("Error while trying to hide sub_title!");
     }
   }
 
@@ -559,17 +602,20 @@ fn init_camera(world: &mut World) {
 }
 
 
-fn set_score_font(world: &World, str: &str) {
+fn set_score_font(world: &World, str: &str) -> String {
   let score = world.read_resource::<Score>();
   let mut ui_text = world.write_storage::<UiText>();
   if let Some(text) = ui_text.get_mut(score.text) {
+    let last_score = text.text.clone();
     text.text = str.to_string();
+    return last_score;
   }
+  return "0".to_string()
 }
 
 fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
-where
-  T: Into<String>,
+  where
+    T: Into<String>,
 {
   let texture_handle = {
     let loader = world.read_resource::<Loader>();
@@ -615,7 +661,7 @@ fn main() -> amethyst::Result<()> {
     assets_dir,
     TitleScreenState::default(),
   )?
-  .build(game_data)?;
+    .build(game_data)?;
   game.run();
   Ok(())
 }
