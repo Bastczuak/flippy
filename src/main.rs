@@ -1,10 +1,12 @@
 use amethyst::assets::{AssetStorage, Loader};
+use amethyst::audio::output::Output;
+use amethyst::audio::{AudioBundle, AudioSink, Source, SourceHandle, WavFormat, DjSystemDesc, Mp3Format};
 use amethyst::core::ecs::{
   Builder, Component, DenseVecStorage, Dispatcher, DispatcherBuilder, Entities, Entity, Join, Read,
   ReadStorage, System, SystemData, World, WorldExt, Write, WriteStorage,
 };
 use amethyst::core::math::Vector3;
-use amethyst::core::{EventReader, Time, Transform, TransformBundle, Hidden};
+use amethyst::core::{EventReader, Hidden, Time, Transform, TransformBundle};
 use amethyst::derive::EventReader;
 use amethyst::input::{
   is_close_requested, is_key_down, BindingTypes, InputBundle, InputEvent, InputHandler,
@@ -17,12 +19,16 @@ use amethyst::renderer::{
 };
 use amethyst::shred::ReadExpect;
 use amethyst::shrev::{EventChannel, ReaderId};
-use amethyst::ui::{Anchor, LineMode, RenderUi, TtfFormat, UiBundle, UiEvent, UiText, UiTransform, UiCreator, UiFinder};
+use amethyst::ui::{
+  Anchor, LineMode, RenderUi, TtfFormat, UiBundle, UiCreator, UiEvent, UiFinder, UiText,
+  UiTransform,
+};
 use amethyst::utils::application_root_dir;
 use amethyst::winit::Event;
 use amethyst::{CoreApplication, GameData, GameDataBuilder, State, StateData, Trans};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
+use std::{iter::Cycle, vec::IntoIter};
 
 const VIRTUAL_WIDTH: f32 = 512.;
 const VIRTUAL_HEIGHT: f32 = 288.;
@@ -40,6 +46,11 @@ const PIPE_SCROLL: f32 = -60.;
 const PIPE_WIDTH: f32 = 70.;
 const PIPE_HEIGHT: f32 = 288.;
 const PIPE_GAP: f32 = 110.;
+const SCORE_SOUND: &str = "audio/score.wav";
+const HURT_SOUND: &str = "audio/hurt.wav";
+const EXPLOSION_SOUND: &str = "audio/explosion.wav";
+const JUMP_SOUND: &str = "audio/jump.wav";
+const MUSIC_TRACKS: &[&str] = &["audio/marios_way.mp3"];
 
 #[derive(Debug)]
 enum BackgroundType {
@@ -59,8 +70,8 @@ struct Score {
 #[derive(Clone, Debug, EventReader)]
 #[reader(MyStateEventReader)]
 pub enum MyStateEvent<T = StringBindings>
-  where
-    T: BindingTypes + Clone,
+where
+  T: BindingTypes + Clone,
 {
   Window(Event),
   Ui(UiEvent),
@@ -80,12 +91,24 @@ struct Background {
 struct Bird {
   dy: f32,
   score: i32,
+  fly_pressed: bool,
 }
 
 #[derive(Debug, Default, Component)]
 #[storage(DenseVecStorage)]
 struct Pipe {
   is_scored: bool,
+}
+
+struct Sounds {
+  score_sfx: SourceHandle,
+  hurt_sfx: SourceHandle,
+  explosion_sfx: SourceHandle,
+  jump_sfx: SourceHandle,
+}
+
+struct Music {
+  pub music: Cycle<IntoIter<SourceHandle>>,
 }
 
 struct BackgroundSystem;
@@ -125,14 +148,23 @@ impl<'a> System<'a> for BirdSystem {
     WriteStorage<'a, Transform>,
     Read<'a, Time>,
     Read<'a, InputHandler<StringBindings>>,
+    Read<'a, AssetStorage<Source>>,
+    ReadExpect<'a, Sounds>,
+    Option<Read<'a, Output>>,
   );
 
-  fn run(&mut self, (mut birds, mut transforms, time, input): Self::SystemData) {
+  fn run(
+    &mut self,
+    (mut birds, mut transforms, time, input, storage, sounds, output): Self::SystemData,
+  ) {
     for (bird, transform) in (&mut birds, &mut transforms).join() {
       bird.dy += BIRD_GRAVITY * time.delta_seconds();
-      if input.key_is_down(VirtualKeyCode::Space) {
+      let space_pressed = input.key_is_down(VirtualKeyCode::Space);
+      if space_pressed && space_pressed != bird.fly_pressed {
         bird.dy = BIRD_JUMP;
+        play_jump_sound(&*sounds, &storage, output.as_deref());
       }
+      bird.fly_pressed = space_pressed;
       transform.prepend_translation_y(bird.dy);
     }
   }
@@ -169,15 +201,22 @@ impl<'a> System<'a> for CollisionSystem {
     ReadStorage<'a, Pipe>,
     ReadStorage<'a, Transform>,
     Write<'a, EventChannel<GameEvent>>,
+    Read<'a, AssetStorage<Source>>,
+    ReadExpect<'a, Sounds>,
+    Option<Read<'a, Output>>,
   );
 
-  fn run(&mut self, (birds, backgrounds, pipes, transforms, mut event_ch): Self::SystemData) {
+  fn run(
+    &mut self,
+    (birds, backgrounds, pipes, transforms, mut event_ch, storage, sounds, output): Self::SystemData,
+  ) {
     for (_, transform) in (&birds, &transforms).join() {
       let bird_x = transform.translation().x;
       let bird_y = transform.translation().y;
 
-      if bird_y - BIRD_WIDTH / 2. > VIRTUAL_HEIGHT / 2.  {
+      if bird_y - BIRD_WIDTH / 2. > VIRTUAL_HEIGHT / 2. {
         event_ch.single_write(GameEvent::Collision);
+        play_hurt_sound(&*sounds, &storage, output.as_deref());
       }
 
       for (_, transform) in (&pipes, &transforms).join() {
@@ -193,6 +232,7 @@ impl<'a> System<'a> for CollisionSystem {
           pipe_y + PIPE_HEIGHT + BIRD_HEIGHT / 2.,
         ) {
           event_ch.single_write(GameEvent::Collision);
+          play_hurt_sound(&*sounds, &storage, output.as_deref());
         }
       }
 
@@ -212,6 +252,7 @@ impl<'a> System<'a> for CollisionSystem {
               background_y + GROUND_HEIGHT + BIRD_HEIGHT / 2.,
             ) {
               event_ch.single_write(GameEvent::Collision);
+              play_hurt_sound(&*sounds, &storage, output.as_deref());
             }
           }
         }
@@ -229,9 +270,15 @@ impl<'a> System<'a> for ScoreSystem {
     ReadStorage<'a, Transform>,
     WriteStorage<'a, UiText>,
     ReadExpect<'a, Score>,
+    Read<'a, AssetStorage<Source>>,
+    ReadExpect<'a, Sounds>,
+    Option<Read<'a, Output>>,
   );
 
-  fn run(&mut self, (mut birds, mut pipes, transforms, mut ui_text, score): Self::SystemData) {
+  fn run(
+    &mut self,
+    (mut birds, mut pipes, transforms, mut ui_text, score, storage, sounds, output): Self::SystemData,
+  ) {
     for (bird, transform) in (&mut birds, &transforms).join() {
       let bird_x = transform.translation().x;
 
@@ -242,6 +289,8 @@ impl<'a> System<'a> for ScoreSystem {
         if !pipe.is_scored && pipe_x < bird_x && pipe_y < 0. {
           pipe.is_scored = true;
           bird.score += 1;
+
+          play_score_sound(&*sounds, &storage, output.as_deref());
 
           if let Some(text) = ui_text.get_mut(score.text) {
             text.text = bird.score.to_string();
@@ -260,6 +309,7 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for TitleScreenState {
     let world = _data.world;
 
     init_camera(world);
+    init_audio(world);
 
     let background_sprite =
       load_sprite("texture/background.png", "texture/background.ron", 0, world);
@@ -311,14 +361,17 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for TitleScreenState {
     let mut hidden = world.write_storage::<Hidden>();
 
     if let Some(entity) = e_title {
-      hidden.insert(entity, Hidden).expect("Error while trying to hide title!");
+      hidden
+        .insert(entity, Hidden)
+        .expect("Error while trying to hide title!");
     }
 
     if let Some(entity) = e_sub_title {
-      hidden.insert(entity, Hidden).expect("Error while trying to hide sub_title!");
+      hidden
+        .insert(entity, Hidden)
+        .expect("Error while trying to hide sub_title!");
     }
   }
-
 
   fn handle_event(
     &mut self,
@@ -445,11 +498,15 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
     let mut hidden = world.write_storage::<Hidden>();
 
     if let Some(entity) = e_title {
-      hidden.remove(entity).expect("Error while trying to show title!");
+      hidden
+        .remove(entity)
+        .expect("Error while trying to show title!");
     }
 
     if let Some(entity) = e_sub_title {
-      hidden.remove(entity).expect("Error while trying to show sub_title!");
+      hidden
+        .remove(entity)
+        .expect("Error while trying to show sub_title!");
     }
 
     let mut ui_text = world.write_storage::<UiText>();
@@ -482,11 +539,15 @@ impl<'a, 'b> State<GameData<'a, 'b>, MyStateEvent> for PlayState {
     let mut hidden = world.write_storage::<Hidden>();
 
     if let Some(entity) = e_title {
-      hidden.insert(entity, Hidden).expect("Error while trying to hide title!");
+      hidden
+        .insert(entity, Hidden)
+        .expect("Error while trying to hide title!");
     }
 
     if let Some(entity) = e_sub_title {
-      hidden.insert(entity, Hidden).expect("Error while trying to hide sub_title!");
+      hidden
+        .insert(entity, Hidden)
+        .expect("Error while trying to hide sub_title!");
     }
   }
 
@@ -605,7 +666,6 @@ fn init_camera(world: &mut World) {
     .build();
 }
 
-
 fn set_score_font(world: &World, str: &str) -> String {
   let score = world.read_resource::<Score>();
   let mut ui_text = world.write_storage::<UiText>();
@@ -614,12 +674,12 @@ fn set_score_font(world: &World, str: &str) -> String {
     text.text = str.to_string();
     return last_score;
   }
-  return "0".to_string()
+  return "0".to_string();
 }
 
 fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRender
-  where
-    T: Into<String>,
+where
+  T: Into<String>,
 {
   let texture_handle = {
     let loader = world.read_resource::<Loader>();
@@ -641,6 +701,70 @@ fn load_sprite<T>(image: T, ron: T, number: usize, world: &World) -> SpriteRende
   SpriteRender::new(sprite_handle, number)
 }
 
+fn load_audio_track_wav(loader: &Loader, world: &World, file: &str) -> SourceHandle {
+  loader.load(file, WavFormat, (), &world.read_resource())
+}
+
+fn load_audio_track_mp3(loader: &Loader, world: &World, file: &str) -> SourceHandle {
+  loader.load(file, Mp3Format, (), &world.read_resource())
+}
+
+fn init_audio(world: &mut World) {
+  let (sound_effects, music) = {
+    let loader = world.read_resource::<Loader>();
+
+    let mut sink = world.write_resource::<AudioSink>();
+    sink.set_volume(0.25);
+
+    let music = MUSIC_TRACKS
+      .iter()
+      .map(|file| load_audio_track_mp3(&loader, &world, file))
+      .collect::<Vec<_>>()
+      .into_iter()
+      .cycle();
+    let music = Music { music };
+
+    let sound = Sounds {
+      score_sfx: load_audio_track_wav(&loader, &world, SCORE_SOUND),
+      hurt_sfx: load_audio_track_wav(&loader, &world, HURT_SOUND),
+      explosion_sfx: load_audio_track_wav(&loader, &world, EXPLOSION_SOUND),
+      jump_sfx: load_audio_track_wav(&loader, &world, JUMP_SOUND),
+    };
+
+    (sound, music)
+  };
+
+  world.insert(sound_effects);
+  world.insert(music);
+}
+
+fn play_score_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Option<&Output>) {
+  if let Some(ref output) = output.as_ref() {
+    if let Some(sound) = storage.get(&sounds.score_sfx) {
+      output.play_once(sound, 0.7);
+    }
+  }
+}
+
+fn play_hurt_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Option<&Output>) {
+  if let Some(ref output) = output.as_ref() {
+    if let Some(sound) = storage.get(&sounds.hurt_sfx) {
+      output.play_once(sound, 1.0);
+    }
+    if let Some(sound) = storage.get(&sounds.explosion_sfx) {
+      output.play_once(sound, 1.0);
+    }
+  }
+}
+
+fn play_jump_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Option<&Output>) {
+  if let Some(ref output) = output.as_ref() {
+    if let Some(sound) = storage.get(&sounds.jump_sfx) {
+      output.play_once(sound, 0.5);
+    }
+  }
+}
+
 fn main() -> amethyst::Result<()> {
   amethyst::start_logger(Default::default());
 
@@ -649,10 +773,16 @@ fn main() -> amethyst::Result<()> {
   let assets_dir = app_root.join("assets");
 
   let game_data = GameDataBuilder::default()
+    .with_system_desc(
+      DjSystemDesc::new(|music: &mut Music| music.music.next()),
+      "dj_system",
+      &[],
+    )
     .with(BackgroundSystem, "background_system", &[])
     .with_bundle(TransformBundle::new())?
     .with_bundle(InputBundle::<StringBindings>::new())?
     .with_bundle(UiBundle::<StringBindings>::new())?
+    .with_bundle(AudioBundle::default())?
     .with_bundle(
       RenderingBundle::<DefaultBackend>::new()
         .with_plugin(
@@ -665,7 +795,7 @@ fn main() -> amethyst::Result<()> {
     assets_dir,
     TitleScreenState::default(),
   )?
-    .build(game_data)?;
+  .build(game_data)?;
   game.run();
   Ok(())
 }
