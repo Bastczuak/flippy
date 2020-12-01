@@ -714,7 +714,7 @@ fn init_audio(world: &mut World) {
     let loader = world.read_resource::<Loader>();
 
     let mut sink = world.write_resource::<AudioSink>();
-    sink.set_volume(0.25);
+    sink.set_volume(0.125);
 
     let music = MUSIC_TRACKS
       .iter()
@@ -741,7 +741,7 @@ fn init_audio(world: &mut World) {
 fn play_score_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Option<&Output>) {
   if let Some(ref output) = output.as_ref() {
     if let Some(sound) = storage.get(&sounds.score_sfx) {
-      output.play_once(sound, 0.7);
+      output.play_once(sound, 0.25);
     }
   }
 }
@@ -749,10 +749,10 @@ fn play_score_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Opt
 fn play_hurt_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Option<&Output>) {
   if let Some(ref output) = output.as_ref() {
     if let Some(sound) = storage.get(&sounds.hurt_sfx) {
-      output.play_once(sound, 1.0);
+      output.play_once(sound, 0.25);
     }
     if let Some(sound) = storage.get(&sounds.explosion_sfx) {
-      output.play_once(sound, 1.0);
+      output.play_once(sound, 0.25);
     }
   }
 }
@@ -760,7 +760,7 @@ fn play_hurt_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Opti
 fn play_jump_sound(sounds: &Sounds, storage: &AssetStorage<Source>, output: Option<&Output>) {
   if let Some(ref output) = output.as_ref() {
     if let Some(sound) = storage.get(&sounds.jump_sfx) {
-      output.play_once(sound, 0.5);
+      output.play_once(sound, 0.15);
     }
   }
 }
