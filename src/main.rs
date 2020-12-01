@@ -176,6 +176,10 @@ impl<'a> System<'a> for CollisionSystem {
       let bird_x = transform.translation().x;
       let bird_y = transform.translation().y;
 
+      if bird_y - BIRD_WIDTH / 2. > VIRTUAL_HEIGHT / 2.  {
+        event_ch.single_write(GameEvent::Collision);
+      }
+
       for (_, transform) in (&pipes, &transforms).join() {
         let pipe_x = transform.translation().x - (PIPE_WIDTH / 2.);
         let pipe_y = transform.translation().y - (PIPE_HEIGHT / 2.);
